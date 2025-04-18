@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AES‑256 Decrypt • Viewer & API</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root{color-scheme:light dark;}
+    body{font-family:system-ui,sans-serif;margin:2rem;line-height:1.4;max-width:60rem}
+    h1{font-size:1.8rem;margin-top:0}
+    form{display:grid;gap:0.5rem 1rem;grid-template-columns:max-content 1fr;align-items:center;margin-bottom:1.2rem}
+    label{font-weight:500}
+    input{width:100%;padding:0.4rem 0.5rem;font-size:1rem;border:1px solid #aaa;border-radius:0.3rem;box-sizing:border-box}
+    button{padding:0.5rem 0.9rem;font-size:1rem;border-radius:0.3rem;border:none;background:#0077ff;color:#fff;cursor:pointer}
+    button:disabled{opacity:0.6;cursor:not-allowed}
+    pre{white-space:pre-wrap;word-wrap:break-word;max-width:100%;padding:1rem;border:1px solid #ccc;border-radius:0.5rem;box-sizing:border-box}
+    #outputActions{margin-top:0.5rem;display:flex;gap:0.5rem}
+    .error{color:#c00;font-weight:600}
+  </style>
+</head>
+<body>
+  <h1>AES‑256‑CBC Decrypt Viewer</h1>
+
+  <form id="decryptForm">
+    <label for="furl">Encrypted&nbsp;file URL:</label>
+    <input id="furl" type="url" required placeholder="https://raw.githubusercontent.com/.../cipher.b64">
+    <label for="fkey">Password:</label>
+    <input id="fkey" type="text" required placeholder="Secret">
+    <span></span>
+    <button id="runBtn">Decrypt</button>
+  </form>
+
+  <p id="status">Paste the encrypted‑file URL and password, then hit Decrypt.</p>
+  <pre id="output" hidden></pre>
+  <div id="outputActions" hidden>
+    <button id="copyBtn">Copy</button>
+    <button id="downloadBtn">Download</button>
+  </div>
+
+<script>
+async function decryptFile(encUrl, password){
+  const status = document.getElementById('status');
+  const out    = document.getElementById('output');
+  out.hidden = true;
+  status.textContent = 'Fetching encrypted file …';
+  try{
+    const resp = await fetch(encUrl,{cache:'no-store'});
+    if(!resp.ok) throw new Error(`HTTP ${resp.status} while fetching file`);
+    const b64  = await resp.text();
+    const enc  = Uint8Array.from(atob(b64.replace(/\s+/g,'')), c=>c.charCodeAt(0));
+    if(enc.length<16) throw new Error('Ciphertext too short');
+    if(new TextDecoder().decode(enc.slice(0,8))!=='Salted__') throw new Error('Expected OpenSSL "Salted__" header');
+    const salt   = enc.slice(8,16);
+    const cipher = enc.slice(16);
+
+    const passKey = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+    const bits    = await crypto.subtle.deriveBits({name:'PBKDF2', salt, iterations:10000, hash:'SHA-256'}, passKey, 384);
+    const bytes   = new Uint8Array(bits);
+    const aesKey  = await crypto.subtle.importKey('raw', bytes.slice(0,32), {name:'AES-CBC'}, false, ['decrypt']);
+    const plain   = await crypto.subtle.decrypt({name:'AES-CBC', iv:bytes.slice(32,48)}, aesKey, cipher);
+    return new TextDecoder().decode(plain);
+  }catch(e){
+    throw e;
+  }
+}
+
+async function handleDecrypt(url,key){
+  const status = document.getElementById('status');
+  const out    = document.getElementById('output');
+  const btn    = document.getElementById('runBtn');
+  const actions = document.getElementById('outputActions');
+  btn.disabled = true;
+  try{
+    const txt = await decryptFile(url,key);
+    status.textContent = 'Decrypted output:';
+    out.textContent = txt;
+    out.hidden = false;
+    actions.hidden = false;
+    window.decryptedText = txt;
+  }catch(err){
+    status.innerHTML = `<span class="error">${err.message}</span>`;
+    actions.hidden = true;
+    window.decryptedText = null; // Clear stored text on error
+  }finally{
+    btn.disabled=false;
+    actions.hidden = out.hidden;
+    if (out.hidden) {
+      window.decryptedText = null; // Clear if output is hidden
+    }
+  }
+}
+
+document.getElementById('decryptForm').addEventListener('submit', e=>{
+  e.preventDefault();
+  handleDecrypt(document.getElementById('furl').value.trim(), document.getElementById('fkey').value);
+});
+
+// --- Additions for Copy/Download ---
+window.decryptedText = null; // Initialize variable to store decrypted text
+
+document.getElementById('copyBtn').addEventListener('click', () => {
+  if (window.decryptedText) {
+    navigator.clipboard.writeText(window.decryptedText).then(() => {
+      const btn = document.getElementById('copyBtn');
+      const originalText = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = originalText; }, 1500);
+    }).catch(err => {
+      console.error('Failed to copy text: ', err);
+      alert('Failed to copy text.');
+    });
+  }
+});
+
+document.getElementById('downloadBtn').addEventListener('click', () => {
+  if (window.decryptedText) {
+    const blob = new Blob([window.decryptedText], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'decrypted.txt';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+});
+// --- End of Additions ---
+
+// If parameters are present, auto‑run (good for bookmarks / sharing)
+const params = new URLSearchParams(location.search);
+if(params.has('url') && params.has('key')){
+  document.getElementById('furl').value = params.get('url');
+  document.getElementById('fkey').value = params.get('key');
+  document.getElementById('outputActions').hidden = true; // Ensure actions hidden initially
+  handleDecrypt(params.get('url'), params.get('key'));
+}
+</script>
+</body>
+</html>
